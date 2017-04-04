@@ -12,12 +12,13 @@ import (
 
 var (
 	topicFlag = flag.String("topic", "", "topic name")
+	fastFlag  = flag.Bool("fast", false, "estimateonly: no message count, but offset calculation")
 	debugFlag = flag.Bool("debug", false, "debug mode")
 )
 
 func main() {
 	flag.Parse()
-	count := 0
+	var count int64 = 0
 
 	topic := *topicFlag
 	brokers := []string{"kafka:9092"}
@@ -59,32 +60,40 @@ ProcessingLoop:
 		offsetOldest, err := client.GetOffset(topic, partition, sarama.OffsetOldest)
 		check(err)
 
-		if offsetNewest > offsetOldest {
-			partitionConsumer, err := consumer.ConsumePartition(topic, partition, sarama.OffsetOldest)
-			check(err)
-			defer partitionConsumer.Close()
+		if *fastFlag {
+			count += offsetNewest - offsetOldest
+		} else {
+			if offsetNewest > offsetOldest {
+				partitionConsumer, err := consumer.ConsumePartition(topic, partition, sarama.OffsetOldest)
+				check(err)
+				defer partitionConsumer.Close()
 
-		ConsumerLoop:
-			for {
-				select {
-				case msg := <-partitionConsumer.Messages():
-					count++
+			ConsumerLoop:
+				for {
+					select {
+					case msg := <-partitionConsumer.Messages():
+						count++
 
-					if msg.Offset%10000 == 0 {
-						log.Printf("%d/%d\n", msg.Offset, offsetNewest)
+						if msg.Offset%10000 == 0 {
+							log.Printf("%d/%d\n", msg.Offset, offsetNewest)
+						}
+
+						if msg.Offset >= offsetNewest-1 {
+							break ConsumerLoop
+						}
+					case <-signals:
+						break ProcessingLoop
 					}
-
-					if msg.Offset >= offsetNewest-1 {
-						break ConsumerLoop
-					}
-				case <-signals:
-					break ProcessingLoop
 				}
 			}
 		}
 	}
 
-	defer fmt.Printf("COUNT: %d\n", count)
+	method := "COUNT"
+	if *fastFlag {
+		method = "ESTIMATE"
+	}
+	defer fmt.Println(method, count)
 }
 
 func check(err error) {
